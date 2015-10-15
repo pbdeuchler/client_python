@@ -4,8 +4,8 @@ from __future__ import unicode_literals
 
 import os
 import socket
-import time
 import threading
+import json
 from contextlib import closing
 
 from . import core
@@ -14,6 +14,7 @@ try:
     from BaseHTTPServer import HTTPServer
     from urllib2 import build_opener, Request, HTTPHandler
     from urllib import quote_plus
+    import urlparse
 except ImportError:
     # Python 3
     unicode = str
@@ -27,23 +28,47 @@ CONTENT_TYPE_LATEST = 'text/plain; version=0.0.4; charset=utf-8'
 '''Content type of the latest text format'''
 
 
-def generate_latest(registry=core.REGISTRY):
+def value_map(metric):
+    values = []
+    for name, labels, value in metric.samples:
+        value = {"name": name, "value": core._floatToGoString(value)}
+        if labels:
+            value["labels"] = [{"key": k, "value": v}
+            for k, v in sorted(labels.items())]
+        values.append(value)
+    return values
+
+
+def generate_latest(registry=core.REGISTRY, format=None):
     '''Returns the metrics from the registry in latest text format as a string.'''
-    output = []
-    for metric in registry.collect():
-        output.append('# HELP {0} {1}'.format(
-            metric.name, metric.documentation.replace('\\', r'\\').replace('\n', r'\n')))
-        output.append('\n# TYPE {0} {1}\n'.format(metric.name, metric.type))
-        for name, labels, value in metric.samples:
-            if labels:
-                labelstr = '{{{0}}}'.format(','.join(
-                    ['{0}="{1}"'.format(
-                     k, v.replace('\\', r'\\').replace('\n', r'\n').replace('"', r'\"'))
-                     for k, v in sorted(labels.items())]))
-            else:
-                labelstr = ''
-            output.append('{0}{1} {2}\n'.format(name, labelstr, core._floatToGoString(value)))
-    return ''.join(output).encode('utf-8')
+    if format == "json":
+        output = {"metrics": []}
+        for metric in registry.collect():
+            output["metrics"].append({
+                "baselabels": metric.name,
+                "docstring": metric.documentation,
+                "metric": {
+                    "type": metric.type,
+                    "value": value_map(metric.samples),
+                }
+            })
+        return json.dumps(output)
+    else:
+        output = []
+        for metric in registry.collect():
+            output.append('# HELP {0} {1}'.format(
+                metric.name, metric.documentation.replace('\\', r'\\').replace('\n', r'\n')))
+            output.append('\n# TYPE {0} {1}\n'.format(metric.name, metric.type))
+            for name, labels, value in metric.samples:
+                if labels:
+                    labelstr = '{{{0}}}'.format(','.join(
+                        ['{0}="{1}"'.format(
+                         k, v.replace('\\', r'\\').replace('\n', r'\n').replace('"', r'\"'))
+                         for k, v in sorted(labels.items())]))
+                else:
+                    labelstr = ''
+                output.append('{0}{1} {2}\n'.format(name, labelstr, core._floatToGoString(value)))
+        return ''.join(output).encode('utf-8')
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -51,7 +76,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', CONTENT_TYPE_LATEST)
         self.end_headers()
-        self.wfile.write(generate_latest(core.REGISTRY))
+        get_params = urlparse.parse_qs(urlparse.urlparse(self.path).query)
+        self.wfile.write(generate_latest(core.REGISTRY), get_params.get("format", "text"))
 
     def log_message(self, format, *args):
         return
